@@ -1,102 +1,207 @@
-(ns consumir-api.teste
-  (:require [clj-http.client :as client]
+; Rode o server primeiro no REPL depois o fronte (current file)
+
+(ns trintrack-server.core
+  (:require [io.pedestal.http :as http]
+            [io.pedestal.http.route :as route]
+            [io.pedestal.http.body-params :as body-params]
+            [cheshire.core :as json]
             [clojure.string :as str]
-            [cheshire.core :as json]))
+            [clj-http.client :as client]))
+
+(def usuario (atom nil))
+(def alimentos (atom nil))
+(def treinos (atom nil))
+(def prato (atom nil))
+(def atividade (atom nil))
 
 (def api-key-alimento "PDSEBKyA7mkKtiKSE6nYpuciLt4ChDkYWy1CWrJV")
 (def api-key-exercicio "50FiZTJVYBfyKW+IwX7Njw==MgBQnbHtREkAaDU8")
 
-(defn calorias-alimento-gramas [calorias-por-100g gramas]
-  (let [calorias-consumidas (* calorias-por-100g (/ gramas 100.0))]
-    (str "\nVoce consumiu aproximadamente " (format "%.2f" calorias-consumidas)
-         " calorias em " gramas " gramas.")))
 
-(defn mostrar-alimento [dados i]
-  (if (>= i (count dados))
-    (println "Digite o numero do alimento que voce consumiu e a quantidade dele: ")
-    (do
-      (println (str (inc i) ". " (:description (nth dados i))))
-      (recur dados (inc i)))))
+(defn traduzir-texto [texto de para]
+  (let [url (str "https://api.mymemory.translated.net/get?q="
+                 (java.net.URLEncoder/encode texto "UTF-8")
+                 "&langpair=" de "|" para)
+        resposta (client/get url {:as :json})
+        traduzido (get-in resposta [:body :responseData :translatedText])]
+    traduzido))
 
-(defn buscar-alimento [n dados i gramas]
-  (cond (>= i (count dados)) "Alimento nao encontrado"
-    (= (inc i) n)
-    (let [alimento (nth dados i)
-          calorias (some #(when (= (:nutrientName %) "Energy") (:value %)) (:foodNutrients alimento))]
-      (if (nil? calorias) "Calorias nao informadas para esse alimento."
-        (str "Descricao: " (:description alimento) (calorias-alimento-gramas calorias gramas))))
-    :else (recur n dados (inc i) gramas)))
+;(defn sugestoes-alimentos [request]
+;  (let [filtro (get-in request [:query-params :filtro] "")
+;        filtro-encoded (java.net.URLEncoder/encode (str filtro) "UTF-8")
+;        url (str "https://api.nal.usda.gov/fdc/v1/foods/search?query="
+;                 filtro-encoded
+;                 "&api_key=" api-key-alimento)
+;        resposta (client/get url {:as :json})
+;        alimentos (mapv #(get % :description) (get-in resposta [:body :foods]))]
+;    {:status 200
+;     :headers {"Content-Type" "application/json"}
+;     :body (json/generate-string alimentos)}))
 
-(defn pegar-alimento [descricao]
-  (let [url (str "https://api.nal.usda.gov/fdc/v1/foods/search?query="
-                 (java.net.URLEncoder/encode descricao "UTF-8")
+(defn sugestoes-alimentos [request]
+  (let [filtro (get-in request [:query-params :filtro] "")
+        filtro-en (traduzir-texto filtro "pt" "en")
+        filtro-encoded (java.net.URLEncoder/encode filtro-en "UTF-8")
+        url (str "https://api.nal.usda.gov/fdc/v1/foods/search?query="
+                 filtro-encoded
                  "&api_key=" api-key-alimento)
         resposta (client/get url {:as :json})
-        dados (:foods (:body resposta))]
-    (mostrar-alimento dados 0)))
-
-(defn pegar-alimento-opcao [descricao n gramas]
-  (let [url (str "https://api.nal.usda.gov/fdc/v1/foods/search?query="
-                 (java.net.URLEncoder/encode descricao "UTF-8")
-                 "&api_key=" api-key-alimento)
-        resposta (client/get url {:as :json})
-        dados (:foods (:body resposta))]
-    (buscar-alimento n dados 0 gramas)))
-
-(defn mostrar-exercicio [dados i]
-  (if (>= i (count dados))
-    (println "Digite o numero da atividade que voce praticou e o tempo gasto em minutos: ")
-    (do
-      (println (str (inc i) ". " (:name (nth dados i))))
-      (recur dados (inc i)))))
-
-(defn tempo-calorias-exercicio [atividade tempo]
-  (let [calorias-gastas (* atividade (/ tempo 60.0))]
-    (str "\nVoce queimou aproximadamente " (format "%.2f" calorias-gastas)
-         " calorias em " tempo " minutos.")))
-
-(defn buscar-exercicio [n dados i tempo]
-  (cond (>= i (count dados)) "Atividade nao encontrada"
-    (= (inc i) n)
-        (let [exercicio (nth dados i) calorias-str (:calories_per_hour exercicio)]
-          (if (nil? calorias-str) "Calorias nao disponiveis para este exercicio."
-                                  (let [calorias (Double/parseDouble (str calorias-str))]
-                                    (str "Atividade: " (:name exercicio) (tempo-calorias-exercicio calorias tempo)))))
-        :else (recur n dados (inc i) tempo)))
+        dados (get-in resposta [:body :foods])
+        alimentos (mapv (fn [item]
+                          (let [descricao (or (:description item) "Não informado")
+                                descricao-pt (traduzir-texto descricao "en" "pt")
+                                calorias (or
+                                           (some #(when (= (:nutrientName %) "Energy")
+                                                    (:value %))
+                                                 (:foodNutrients item))
+                                           "Não informado")]
+                            {:prato descricao-pt
+                             :calorias calorias}))
+                        dados)]
+    {:status 200
+     :headers {"Content-Type" "application/json"}
+     :body (json/generate-string alimentos)}))
 
 
-(defn pegar-exercicio [atividade]
-  (let [url (str "https://api.api-ninjas.com/v1/caloriesburned?activity="
-                 (java.net.URLEncoder/encode atividade "UTF-8"))
+
+;(defn sugestoes-treinos [request]
+;  (let [filtro (get-in request [:query-params :filtro] "")
+;        url (str "https://api.api-ninjas.com/v1/caloriesburned?activity="
+;                 (java.net.URLEncoder/encode (str filtro) "UTF-8"))
+;        resposta (client/get url {:as :string
+;                                  :headers {"X-Api-Key" api-key-exercicio}})
+;        dados (json/parse-string (:body resposta) true)
+;        nomes (mapv #(get % :name) dados)]
+;    {:status 200
+;     :headers {"Content-Type" "application/json"}
+;     :body (json/generate-string nomes)}))
+
+(defn sugestoes-treinos [request]
+  (let [filtro (get-in request [:query-params :filtro] "")
+        filtro-en (traduzir-texto filtro "pt" "en")
+        url (str "https://api.api-ninjas.com/v1/caloriesburned?activity="
+                 (java.net.URLEncoder/encode filtro-en "UTF-8"))
         resposta (client/get url {:as :string
                                   :headers {"X-Api-Key" api-key-exercicio}})
-        dados (json/parse-string (:body resposta) true)]
-    (mostrar-exercicio dados 0)))
+        dados (json/parse-string (:body resposta) true)
+        treinos (mapv (fn [item]
+                        (let [nome (or (:name item) "Não informado")
+                              nome-pt (traduzir-texto nome "en" "pt")]
+                          {:nome nome-pt
+                           :calorias-por-hora (:calories_per_hour item)}))
+                      dados)]
+    {:status 200
+     :headers {"Content-Type" "application/json"}
+     :body (json/generate-string treinos)}))
 
-(defn pegar-exercicio-opcao [atividade n tempo]
-  (let [url (str "https://api.api-ninjas.com/v1/caloriesburned?activity="
-                 (java.net.URLEncoder/encode atividade "UTF-8"))
-        resposta (client/get url {:as :string
-                                  :headers {"X-Api-Key" api-key-exercicio}})
-        dados (json/parse-string (:body resposta) true)]
-    (buscar-exercicio n dados 0 tempo)))
+
+;=======================================================================================================================
+
+(defn hello [request]
+  {:status 200
+   :headers {"Content-Type" "text/plain"}
+   :body "Hello World from TrinTrack Backend!"})
+
+;=======================================================================================================================
+
+(defn cadastrar-usuario [request]
+  (let [dados (:json-params request)]
+    (reset! usuario dados)
+    {:status 200 :body {:mensagem "Usuário cadastrado com sucesso!" :usuario dados}}))
+
+(defn verificar-usuario [request]
+  {:status 200
+   :headers {"Content-Type" "application/json"}
+   :body (cheshire.core/generate-string {:existe (some? @usuario)})})
+
+(defn mostrar-usuario [request]
+  (if (some? @usuario)
+    {:status 200
+     :headers {"Content-Type" "application/json"}
+     :body (json/generate-string @usuario)}
+    {:status 404
+     :headers {"Content-Type" "application/json"}
+     :body (json/generate-string {:erro "Nenhum usuário cadastrado."})}))
+
+;=======================================================================================================================
+
+(defn cadastrar-alimentos [request]
+  (let [dados (:json-params request)]
+    (swap! alimentos conj dados)
+    {:status 200 :body {:mensagem "alimento cadastrado com sucesso!" :alimentos dados}}))
+
+(defn verificar-alimentos [request]
+  {:status 200
+   :headers {"Content-Type" "application/json"}
+   :body (cheshire.core/generate-string {:existe (some? @alimentos)})})
+
+(defn mostrar-alimentos [request]
+  (if (some? @alimentos)
+    {:status 200
+     :headers {"Content-Type" "application/json"}
+     :body (json/generate-string @alimentos)}
+    {:status 404
+     :headers {"Content-Type" "application/json"}
+     :body (json/generate-string {:erro "Nenhum alimento cadastrado."})}))
+
+;=======================================================================================================================
+
+(defn cadastrar-treinios [request]
+  (let [dados (:json-params request)]
+    (swap! treinos conj dados)
+    {:status 200 :body {:mensagem "treino cadastrado com sucesso!" :treinos dados}}))
+
+(defn verificar-treinios [request]
+  {:status 200
+   :headers {"Content-Type" "application/json"}
+   :body (cheshire.core/generate-string {:existe (some? @treinos)})})
+
+(defn mostrar-treinios [request]
+  (if (some? @treinos)
+    {:status 200
+     :headers {"Content-Type" "application/json"}
+     :body (json/generate-string @treinos)}
+    {:status 404
+     :headers {"Content-Type" "application/json"}
+     :body (json/generate-string {:erro "Nenhum treino cadastrado."})}))
 
 
-;; Main
-(defn main []
-  (println "Digite o alimento:")
-  (let [descricao (read-line)]
-    (pegar-alimento descricao)
-    (let [n (Integer/parseInt (read-line))
-          gramas (Integer/parseInt (read-line))]
-      (println (pegar-alimento-opcao descricao n gramas))))
+;=======================================================================================================================
 
-  (println "\nDigite a atividade:")
-  (let [atividade (read-line)]
-    (pegar-exercicio atividade)
-    (let [n (Integer/parseInt (read-line))
-          tempo (Integer/parseInt (read-line))]
-      (println (pegar-exercicio-opcao atividade n tempo)))))
+(def routes
+  (route/expand-routes
+    #{["/hello" :get hello :route-name :hello]
+      ["/alimentos/sugestoes" :get sugestoes-alimentos :route-name :sugestoes-alimentos]
+      ["/treinos/sugestoes" :get sugestoes-treinos :route-name :sugestoes-treinos]
 
-(main)
+      ["/usuario" :post cadastrar-usuario :route-name :cadastrar-usuario]
+      ["/usuario/existe" :get verificar-usuario :route-name :verificar-usuario]
+      ["/usuario/dados" :get mostrar-usuario :route-name :mostrar-usuario]
 
+      ["/alimentacao" :post cadastrar-alimentos :route-name :cadastrar-alimentos]
+      ["/alimentacao/existe" :get verificar-alimentos :route-name :verificar-alimentos]
+      ["/alimentacao/dados" :get mostrar-alimentos :route-name :mostrar-alimentos]
+
+      ["/exercicio" :post cadastrar-treinios :route-name :cadastrar-treinios]
+      ["/exercicio/existe" :get verificar-treinios :route-name :verificar-treinios]
+      ["/exercicio/dados" :get mostrar-treinios :route-name :mostrar-treinios]
+
+
+      }))
+
+(def service-map
+  (-> {::http/routes routes
+       ::http/type :jetty
+       ::http/port 3000 ;; Porta compatível com o front
+       ::http/join? false
+       ::http/secure-headers nil}
+      http/default-interceptors
+      (update ::http/interceptors conj (body-params/body-params))))
+
+(def server (atom nil))
+
+(defn start-server []
+  (reset! server (http/start (http/create-server service-map)))
+  (println "Servidor iniciado em http://localhost:3000"))
+
+(start-server)
