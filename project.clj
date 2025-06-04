@@ -14,35 +14,11 @@
 (def usuario (atom nil))
 (def alimentos (atom nil))
 (def treinos (atom nil))
-(def extrato (atom []))
 
 (def api-key-alimento "PDSEBKyA7mkKtiKSE6nYpuciLt4ChDkYWy1CWrJV")
 (def api-key-exercicio "50FiZTJVYBfyKW+IwX7Njw==MgBQnbHtREkAaDU8")
 
-(def iso-formatter (f/formatters :date-time))
-
-(defn parse-data [data-str]
-  (c/to-long (f/parse iso-formatter data-str)))
-
-(defn filtrar-por-periodo [lista inicio fim]
-  (filter (fn [{:keys [data]}]
-            (let [data-ms (parse-data data)]
-              (and (>= data-ms inicio) (<= data-ms fim))))
-          lista))
-
-(defn relatorio-handler [request]
-  (let [inicio-str (get-in request [:query-params :inicio])
-        fim-str    (get-in request [:query-params :fim])
-        inicio-ms  (parse-data inicio-str)
-        fim-ms     (parse-data fim-str)
-        alimentos-filtrados  (filtrar-por-periodo @alimentos inicio-ms fim-ms)
-        treinos-filtrados    (filtrar-por-periodo @treinos inicio-ms fim-ms)]
-    {:status 200
-     :headers {"Content-Type" "application/json"}
-     :body (json/generate-string
-             {:periodo {:inicio inicio-str :fim fim-str}
-              :alimentos alimentos-filtrados
-              :exercicios treinos-filtrados})}))
+(def iso-formatter (f/formatter "yyyy/MM/dd"))
 
 (defn traduzir-texto [texto de para]
   (let [url (str "https://api.mymemory.translated.net/get?q="
@@ -94,7 +70,7 @@
      :headers {"Content-Type" "application/json"}
      :body (json/generate-string treinos)}))
 
-;=======================================================================================================================
+;usuario=======================================================================================================================
 
 (defn cadastrar-usuario [request]
   (let [dados (:json-params request)]
@@ -117,33 +93,68 @@
 
 ;extrato================================================================================================================
 
-;(defn parse-ddMMyyyy [s]
-;  (let [[d m y] (map #(Integer/parseInt %) (clojure.string/split s #"/"))]
-;    {:ano y :mes m :dia d}))
-;
-;(defn comparar-datas [a b]
-;  (compare (parse-ddMMyyyy (:data a)) (parse-ddMMyyyy (:data b))))
-;
-;(defn inserir-no-extrato [registro]
-;  (let [atualizado (->> (conj @extrato registro)
-;                        (sort comparar-datas)
-;                        vec)]
-;    (reset! extrato atualizado)))
-;
-;(defn mostrar-extrato [request]
-;  (let [alimentoss @alimentos
-;        treinos @treinos
-;        todos (sort comparar-datas (concat alimentoss treinos))]
-;    {:status  200
-;     :headers {"Content-Type" "application/json"}
-;     :body (json/generate-string todos)}))
+(defn parse-data [data-str]
+  (c/to-long (f/parse iso-formatter data-str)))
 
-;(defn mostrar-extrato [request]
-;  {:status 200
-;   :headers {"Content-Type" "application/json"}
-;   :body (json/generate-string @extrato)})
+(defn filtrar-por-periodo [lista inicio fim]
+  (filter (fn [{:keys [data]}]
+            (let [data-ms (parse-data data)]
+              (and (>= data-ms inicio) (<= data-ms fim))))
+          lista))
 
-;extrato================================================================================================================
+(defn mostrar-extrato [request]
+  (let [inicio-str (get-in request [:query-params :inicio])
+        fim-str    (get-in request [:query-params :fim])
+        inicio-ms  (parse-data inicio-str)
+        fim-ms     (parse-data fim-str)
+        alimentos-filtrados  (filtrar-por-periodo @alimentos inicio-ms fim-ms)
+        treinos-filtrados    (filtrar-por-periodo @treinos inicio-ms fim-ms)]
+    {:status 200
+     :headers {"Content-Type" "application/json"}
+     :body (json/generate-string
+             {:periodo {:inicio inicio-str :fim fim-str}
+              :alimentos alimentos-filtrados
+              :exercicios treinos-filtrados})}))
+
+
+;saldo================================================================================================================
+
+
+(defn calcular-saldo-por-dia [alimentos treinos]
+  (let [consumidas (reduce (fn [acc {:keys [data calorias]}]
+                             (let [dia (subs data 0 10)
+                                   total (+ (get acc dia 0) calorias)]
+                               (assoc acc dia total)))
+                           {} alimentos)
+        gastas (reduce (fn [acc {:keys [data calorias-por-hora]}]
+                         (let [dia (subs data 0 10)
+                               total (+ (get acc dia 0) calorias-por-hora)]
+                           (assoc acc dia total)))
+                       {} treinos)
+        todos-os-dias (set (concat (keys consumidas) (keys gastas)))]
+    (reduce (fn [acc dia]
+              (let [c (get consumidas dia 0)
+                    g (get gastas dia 0)]
+                (assoc acc dia (- c g))))
+            {} todos-os-dias)))
+
+
+(defn mostrar-saldo [request]
+  (let [inicio-str (get-in request [:query-params :inicio])
+        fim-str    (get-in request [:query-params :fim])
+        inicio-ms  (parse-data inicio-str)
+        fim-ms     (parse-data fim-str)
+        alimentos-filtrados  (filtrar-por-periodo @alimentos inicio-ms fim-ms)
+        treinos-filtrados    (filtrar-por-periodo @treinos inicio-ms fim-ms)
+        saldo (calcular-saldo-por-dia alimentos-filtrados treinos-filtrados)]
+    {:status 200
+     :headers {"Content-Type" "application/json"}
+     :body (json/generate-string {:periodo {:inicio inicio-str :fim fim-str}
+                                  :saldo saldo})}))
+
+
+
+;alimento================================================================================================================
 
 (defn cadastrar-alimentos [request]
   (let [dados (:json-params request)]
@@ -170,7 +181,7 @@
      :headers {"Content-Type" "application/json"}
      :body (json/generate-string {:erro "Nenhum alimento cadastrado."})}))
 
-;=======================================================================================================================
+;treino=======================================================================================================================
 
 (defn cadastrar-treinios [request]
   (let [dados (:json-params request)]
@@ -198,18 +209,20 @@
      :headers {"Content-Type" "application/json"}
      :body (json/generate-string {:erro "Nenhum treino cadastrado."})}))
 
-;=======================================================================================================================
+;rotas=======================================================================================================================
 
 (def routes
   (route/expand-routes
     #{["/alimentos/sugestoes" :get sugestoes-alimentos :route-name :sugestoes-alimentos]
       ["/treinos/sugestoes" :get sugestoes-treinos :route-name :sugestoes-treinos]
-
+      ["/extrato" :get mostrar-extrato :route-name :mostrar-extrato]
       ["/usuario" :post cadastrar-usuario :route-name :cadastrar-usuario]
+      ["/usuario/existe" :get verificar-usuario :route-name :verificar-usuario]
       ["/alimentacao" :post cadastrar-alimentos :route-name :cadastrar-alimentos]
       ["/exercicio" :post cadastrar-treinios :route-name :cadastrar-treinios]
 
-      ["/usuario/existe" :get verificar-usuario :route-name :verificar-usuario]
+      ["/saldo" :get mostrar-saldo :route-name :saldo]
+      
       ["/usuario/dados" :get mostrar-usuario :route-name :mostrar-usuario]
 
       ["/alimentacao/existe" :get verificar-alimentos :route-name :verificar-alimentos]
@@ -218,10 +231,8 @@
       ["/exercicio/existe" :get verificar-treinios :route-name :verificar-treinios]
       ["/exercicio/dados" :get mostrar-treinios :route-name :mostrar-treinios]
 
-      ["/relatorio" :get relatorio-handler :route-name :relatorio]
 
       }))
-
 
 (def service-map
   (-> {::http/routes routes
