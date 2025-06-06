@@ -125,28 +125,26 @@
 ;saldo================================================================================================================
 
 
-(defn calcular-saldo-total [alimentos treinos]
-  (let [total-consumidas (reduce (fn [x {:keys [calorias]}]
-                                   (+ x (or calorias 0)))
-                                 0 alimentos)
-        total-gastas (reduce (fn [y {:keys [calorias-por-hora]}]
-                                  (+ y (or calorias-por-hora 0)))
-                                0 treinos)]
+
+(defn calcular-saldo-total-por-periodo [inicio-ms fim-ms]
+  (let [alimentos-filtrados (filtrar-por-periodo @alimentos inicio-ms fim-ms)
+        treinos-filtrados (filtrar-por-periodo @treinos inicio-ms fim-ms)
+        total-consumidas (reduce + (map #(or (:calorias %) 0) alimentos-filtrados))
+        total-gastas (reduce + (map #(or (:calorias-por-hora %) 0) treinos-filtrados))]
     (- total-consumidas total-gastas)))
 
 
 (defn mostrar-saldo [request]
   (let [inicio-str (get-in request [:query-params :inicio])
-        fim-str    (get-in request [:query-params :fim])
-        inicio-ms  (parse-data inicio-str)
-        fim-ms     (parse-data fim-str)
-        alimentos-filtrados (filtrar-por-periodo @alimentos inicio-ms fim-ms)
-        treinos-filtrados   (filtrar-por-periodo @treinos inicio-ms fim-ms)
-        saldo-total (calcular-saldo-total alimentos-filtrados treinos-filtrados)]
+        fim-str (get-in request [:query-params :fim])
+        inicio-ms (parse-data inicio-str)
+        fim-ms (parse-data fim-str)
+        saldo-total (calcular-saldo-total-por-periodo inicio-ms fim-ms)]
     {:status 200
      :headers {"Content-Type" "application/json"}
-     :body (json/generate-string {:periodo {:inicio inicio-str :fim fim-str}
-                                  :saldo-total saldo-total})}))
+     :body (json/generate-string
+             {:periodo {:inicio inicio-str :fim fim-str}
+              :saldo-total saldo-total})}))
 
 
 
